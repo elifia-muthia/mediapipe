@@ -171,11 +171,9 @@ absl::Status RunMPPGraph() {
       for (auto& landmark: multiHandLandmarks) {
         std::cout << landmark.DebugString();
       }
-     //there is your code,you can use multiHandLandmarks 
     }
 
     // if (!poller_landmark.Next(&landmark_packet)) break;
-
 
     auto& output_frame = packet.Get<mediapipe::ImageFrame>();
     // auto& output_landmarks = landmark_packet.Get<std::vector<::mediapipe::NormalizedLandmarkList>>();
