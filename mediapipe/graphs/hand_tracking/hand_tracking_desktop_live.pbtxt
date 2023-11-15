@@ -44,3 +44,9 @@ node {
   input_stream: "NORM_RECTS:1:multi_hand_rects"
   output_stream: "IMAGE:output_video"
 }
+
+node {
+  calculator: "PacketPresenceCalculator"
+  input_stream: "PACKET:landmarks"
+  output_stream: "PRESENCE:landmark_presence"
+}

@@ -44,10 +44,22 @@ cc_library(
         ":desktop_offline_calculators",
         "//mediapipe/calculators/core:constant_side_packet_calculator",
         "//mediapipe/calculators/core:merge_calculator",
+        "//mediapipe/calculators/core:packet_presence_calculator",
         "//mediapipe/graphs/hand_tracking/subgraphs:hand_renderer_cpu",
         "//mediapipe/modules/hand_landmark:hand_landmark_tracking_cpu",
     ],
 )
+
+# cc_library(
+#     name = "desktop_tflite_calculators",
+#     deps = [
+#         ":desktop_offline_calculators",
+#         "//mediapipe/calculators/core:constant_side_packet_calculator",
+#         "//mediapipe/calculators/core:merge_calculator",
+#         "//mediapipe/graphs/hand_tracking/subgraphs:hand_renderer_cpu",
+#         "//mediapipe/modules/hand_landmark:hand_landmark_tracking_cpu",
+#     ],
+# )
 
 mediapipe_binary_graph(
     name = "hand_tracking_desktop_live_binary_graph",
