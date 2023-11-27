@@ -224,30 +224,47 @@ int main(int argc, char** argv) {
   while (true) {
     // Accept a client connection
     clientSocket = accept(serverSocket, (struct sockaddr*)&clientAddress, &clientAddressLength);
-    std::cout << "Client connected!";
+    std::cout << "Client connected!" << std::endl;
     if (clientSocket < 0) {
         std::cerr << "Error accepting connection" << std::endl;
         close(serverSocket);
         return -1;
     }
 
-    const size_t bufferSize = 10 * 1024 * 1024; // 10 MB
-    std::vector<char> imageDataBuffer(bufferSize);
-    ssize_t bytesRead = recv(clientSocket, imageDataBuffer.data(), bufferSize, 0);
+    // Receive the size of the image data
+    size_t imageSize;
+    ssize_t sizeReceived = recv(clientSocket, &imageSize, sizeof(size_t), 0);
 
-    if (bytesRead < 0) {
-      std::cerr << "Error receiving image data" << std::endl;
-      close(clientSocket);
-      continue;
+    if (sizeReceived != sizeof(size_t)) {
+        std::cerr << "Error receiving image size" << std::endl;
+        close(clientSocket);
+        return -1;
     }
 
-    // single image
-    cv::Mat inputImage = cv::imdecode(cv::Mat(imageDataBuffer), cv::IMREAD_COLOR);
+    // Receive the image data
+    std::vector<char> imageDataBuffer(imageSize);
+    size_t totalBytesReceived = 0;
+
+    while (totalBytesReceived < imageSize) {
+        ssize_t bytesRead = recv(clientSocket, imageDataBuffer.data() + totalBytesReceived, imageSize - totalBytesReceived, 0);
+
+        if (bytesRead <= 0) {
+            std::cerr << "Error receiving image data" << std::endl;
+            close(clientSocket);
+            return -1;
+        }
+
+        totalBytesReceived += bytesRead;
+    }
+
+    cv::Mat inputImage = cv::imdecode(imageDataBuffer, cv::IMREAD_COLOR);
+
     if (inputImage.empty()) {
-      std::cerr << "Error decoding image" << std::endl;
-      close(clientSocket);
-      continue; // Continue to the next iteration of the loop
+        std::cerr << "Error decoding image" << std::endl;
+        close(clientSocket);
+        return -1;
     }
+    cv::imwrite("/Users/elifiamuthia/Desktop/validate_image.jpg", inputImage);
 
 
     cv::Mat outputImage;
@@ -255,10 +272,17 @@ int main(int argc, char** argv) {
     absl::Status run_status = RunMPPGraph(inputImage, outputImage, multiHandLandmarks);
 
     // print output image with landmarks for debugging
-    // cv::imwrite("/Users/elifiamuthia/Desktop/output_image.jpg", outputImage);
+    
+    cv::imwrite("/Users/elifiamuthia/Desktop/output_image.jpg", outputImage);
+
+    std::cout << "Printing landmarks ... " << std::endl;
+    for (auto& landmark: multiHandLandmarks) {
+      std::string landmarkString = landmark.DebugString();
+    }
 
     for (auto& landmark: multiHandLandmarks) {
       std::string landmarkString = landmark.DebugString();
+      std::cout << landmarkString << std::endl;
       ssize_t bytesSent = send(clientSocket, landmarkString.c_str(), landmarkString.size(), 0);
 
         if (bytesSent < 0) {
