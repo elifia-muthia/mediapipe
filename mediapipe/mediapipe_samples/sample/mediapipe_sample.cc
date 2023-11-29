@@ -48,6 +48,7 @@ constexpr char kInputStream[] = "input_video";
 constexpr char kOutputStream[] = "output_video";
 constexpr char kLandmarksStream[] = "landmarks";
 constexpr char kWindowName[] = "MediaPipe";
+mediapipe::CalculatorGraph graph;
 
 ABSL_FLAG(std::string, calculator_graph_config_file, "",
           "Name of file containing text format CalculatorGraphConfig proto.");
@@ -59,8 +60,7 @@ ABSL_FLAG(std::string, output_video_path, "",
           "If not provided, show result in a window.");
 
 //////////////////////
-
-absl::Status RunMPPGraph(cv::Mat& inputImage, cv::Mat& outputImage, std::vector<::mediapipe::NormalizedLandmarkList>& multiHandLandmarks) {
+absl::Status initMPPGraph() {
   std::string calculator_graph_config_contents = R"(
     # MediaPipe graph that performs hands tracking on desktop with TensorFlow
     # Lite on CPU.
@@ -115,22 +115,20 @@ absl::Status RunMPPGraph(cv::Mat& inputImage, cv::Mat& outputImage, std::vector<
       output_stream: "PRESENCE:landmark_presence"
     }
   )";
-  // MP_RETURN_IF_ERROR(mediapipe::file::GetContents(
-  //     absl::GetFlag(FLAGS_calculator_graph_config_file),
-  //     &calculator_graph_config_contents));
-  // ABSL_LOG(INFO) << "Get calculator graph config contents: "
-  //                << calculator_graph_config_contents;
+
   mediapipe::CalculatorGraphConfig config =
       mediapipe::ParseTextProtoOrDie<mediapipe::CalculatorGraphConfig>(
           calculator_graph_config_contents);
 
   ABSL_LOG(INFO) << "Initialize the calculator graph.";
-  mediapipe::CalculatorGraph graph;
-  MP_RETURN_IF_ERROR(graph.Initialize(config));
   
+  MP_RETURN_IF_ERROR(graph.Initialize(config));
+}
+
+absl::Status RunMPPGraph(cv::Mat& inputImage, cv::Mat& outputImage, std::vector<::mediapipe::NormalizedLandmarkList>& multiHandLandmarks) {
   MP_ASSIGN_OR_RETURN(mediapipe::OutputStreamPoller poller,
                       graph.AddOutputStreamPoller(kOutputStream));
-    // hand landmarks stream
+
   MP_ASSIGN_OR_RETURN(mediapipe::OutputStreamPoller poller_landmark,
               graph.AddOutputStreamPoller(kLandmarksStream));
 
@@ -139,7 +137,7 @@ absl::Status RunMPPGraph(cv::Mat& inputImage, cv::Mat& outputImage, std::vector<
 
   ABSL_LOG(INFO) << "Start running the calculator graph.";
   MP_RETURN_IF_ERROR(graph.StartRun({}));
-
+  
   ABSL_LOG(INFO) << "Start grabbing and processing frames.";
   size_t frame_timestamp = 0;
 
@@ -173,7 +171,6 @@ absl::Status RunMPPGraph(cv::Mat& inputImage, cv::Mat& outputImage, std::vector<
     multiHandLandmarks = landmark_packet.Get<std::vector<::mediapipe::NormalizedLandmarkList>>();
   }
 
-
   auto& output_frame = packet.Get<mediapipe::ImageFrame>();
 
   // Convert back to opencv for display or saving.
@@ -185,6 +182,8 @@ absl::Status RunMPPGraph(cv::Mat& inputImage, cv::Mat& outputImage, std::vector<
 }
 
 int main(int argc, char** argv) {
+  initMPPGraph();
+
   int serverSocket, clientSocket;
   struct sockaddr_in serverAddress, clientAddress;
   socklen_t clientAddressLength = sizeof(clientAddress);
@@ -231,94 +230,88 @@ int main(int argc, char** argv) {
         return -1;
     }
 
-    // Receive the size of the image data
-    size_t imageSize;
-    ssize_t sizeReceived = recv(clientSocket, &imageSize, sizeof(size_t), 0);
+    while (true) {
+      // Receive the size of the image data
+      size_t imageSize;
+      ssize_t sizeReceived = recv(clientSocket, &imageSize, sizeof(size_t), 0);
 
-    if (sizeReceived != sizeof(size_t)) {
-        std::cerr << "Error receiving image size" << std::endl;
-        close(clientSocket);
-        return -1;
+      if (sizeReceived != sizeof(size_t)) {
+          std::cerr << "Error receiving image size" << std::endl;
+          close(clientSocket);
+          return -1;
+      }
+
+      if (imageSize == 0) {
+            std::cout << "End of stream signal received. Closing connection." << std::endl;
+            break;  // Exit the inner loop and close the connection
+      }
+
+      std::cout << "Image size received!\n";
+
+      // Receive the image data
+      std::vector<char> imageDataBuffer(imageSize);
+      size_t totalBytesReceived = 0;
+
+      while (totalBytesReceived < imageSize) {
+          ssize_t bytesRead = recv(clientSocket, imageDataBuffer.data() + totalBytesReceived, imageSize - totalBytesReceived, 0);
+
+          if (bytesRead <= 0) {
+              std::cerr << "Error receiving image data" << std::endl;
+              close(clientSocket);
+              return -1;
+          }
+
+          totalBytesReceived += bytesRead;
+      }
+
+      cv::Mat inputImage = cv::imdecode(imageDataBuffer, cv::IMREAD_COLOR);
+
+      if (inputImage.empty()) {
+          std::cerr << "Error decoding image" << std::endl;
+          close(clientSocket);
+          return -1;
+      }
+      cv::imwrite("/Users/elifiamuthia/Desktop/validate_image.jpg", inputImage);
+
+      std::cout << "Image received!\n";
+
+      cv::Mat outputImage;
+      std::vector<::mediapipe::NormalizedLandmarkList> multiHandLandmarks = std::vector<::mediapipe::NormalizedLandmarkList>();
+      absl::Status run_status = RunMPPGraph(inputImage, outputImage, multiHandLandmarks);
+
+      // print output image with landmarks for debugging
+      cv::imwrite("/Users/elifiamuthia/Desktop/output_image.jpg", outputImage);
+
+      std::cout << "Printing landmarks ... " << std::endl;
+
+      // Send all landmarks as a single concatenated string
+      std::string allLandmarksString;
+      for (auto& landmark : multiHandLandmarks) {
+          allLandmarksString += landmark.DebugString() + "##LANDMARK_DELIMITER##";
+      }
+      std::cout << allLandmarksString << std::endl;
+
+      size_t landmarksSize = allLandmarksString.size();
+      ssize_t sizeSent = send(clientSocket, &landmarksSize, sizeof(size_t), 0);
+
+      if (sizeSent != sizeof(size_t)) {
+          std::cerr << "Error sending landmarks size" << std::endl;
+          close(clientSocket);
+          return -1;
+      }
+
+      ssize_t bytesSent = send(clientSocket, allLandmarksString.c_str(), landmarksSize, 0);
+
+      if (bytesSent < 0) {
+          std::cerr << "Error sending landmarks data" << std::endl;
+          close(clientSocket);
+          return -1;
+      }
     }
-
-    // Receive the image data
-    std::vector<char> imageDataBuffer(imageSize);
-    size_t totalBytesReceived = 0;
-
-    while (totalBytesReceived < imageSize) {
-        ssize_t bytesRead = recv(clientSocket, imageDataBuffer.data() + totalBytesReceived, imageSize - totalBytesReceived, 0);
-
-        if (bytesRead <= 0) {
-            std::cerr << "Error receiving image data" << std::endl;
-            close(clientSocket);
-            return -1;
-        }
-
-        totalBytesReceived += bytesRead;
-    }
-
-    cv::Mat inputImage = cv::imdecode(imageDataBuffer, cv::IMREAD_COLOR);
-
-    if (inputImage.empty()) {
-        std::cerr << "Error decoding image" << std::endl;
-        close(clientSocket);
-        return -1;
-    }
-    cv::imwrite("/Users/elifiamuthia/Desktop/validate_image.jpg", inputImage);
-
-
-    cv::Mat outputImage;
-    std::vector<::mediapipe::NormalizedLandmarkList> multiHandLandmarks = std::vector<::mediapipe::NormalizedLandmarkList>();
-    absl::Status run_status = RunMPPGraph(inputImage, outputImage, multiHandLandmarks);
-
-    // print output image with landmarks for debugging
     
-    cv::imwrite("/Users/elifiamuthia/Desktop/output_image.jpg", outputImage);
-
-    std::cout << "Printing landmarks ... " << std::endl;
-    for (auto& landmark: multiHandLandmarks) {
-      std::string landmarkString = landmark.DebugString();
-    }
-
-    for (auto& landmark: multiHandLandmarks) {
-      std::string landmarkString = landmark.DebugString();
-      std::cout << landmarkString << std::endl;
-      ssize_t bytesSent = send(clientSocket, landmarkString.c_str(), landmarkString.size(), 0);
-
-        if (bytesSent < 0) {
-            std::cerr << "Error sending landmark data" << std::endl;
-            close(clientSocket);
-            continue; // Continue to the next iteration of the loop
-        }
-    }
 
     close(clientSocket);
   }
-
-  
-
-  // live video feed
-  // cv::VideoCapture capture;
-  // capture.open(0);
-  // bool grab_frames = true;
-  // while (grab_frames) {
-  //   cv::Mat inputImage;
-  //   capture >> inputImage;
-
-  //   cv::Mat outputImage;
-  //   std::vector<::mediapipe::NormalizedLandmarkList> multiHandLandmarks = std::vector<::mediapipe::NormalizedLandmarkList>();
-  //   absl::Status run_status = RunMPPGraph(inputImage, outputImage, multiHandLandmarks);
-
-  //   // print output image with landmarks for debugging
-  //   cv::imwrite("/Users/elifiamuthia/Desktop/output_image.jpg", outputImage);
-
-  //   for (auto& landmark: multiHandLandmarks) {
-  //         std::cout << landmark.DebugString();
-  //   }
-
-  //   const int pressed_key = cv::waitKey(5);
-  //   if (pressed_key >= 0 && pressed_key != 255) grab_frames = false;
-  // }
 
   close(serverSocket);
   return EXIT_SUCCESS;
